@@ -7,6 +7,15 @@ gi.require_version('Pango', '1.0')
 from gi.repository import Pango, PangoCairo
 
 
+def text_layout(cr, mark):
+    layout = PangoCairo.create_layout(cr)
+    font = Pango.FontDescription('Sans Bold')
+    font.set_absolute_size(mark.get('size', 28) * Pango.SCALE)
+    layout.set_font_description(font)
+    layout.set_text(mark.get('text', ''), -1)
+    return layout
+
+
 def draw_mark(cr, mark):
     kind = mark['kind']
     points = mark['points']
@@ -19,11 +28,7 @@ def draw_mark(cr, mark):
     cr.set_line_cap(cairo.LINE_CAP_ROUND)
     cr.set_line_join(cairo.LINE_JOIN_ROUND)
     if kind == 'text':
-        layout = PangoCairo.create_layout(cr)
-        font = Pango.FontDescription('Sans Bold')
-        font.set_absolute_size(mark.get('size', 28) * Pango.SCALE)
-        layout.set_font_description(font)
-        layout.set_text(mark.get('text', ''), -1)
+        layout = text_layout(cr, mark)
         cr.move_to(x, y)
         PangoCairo.show_layout(cr, layout)
     elif kind == 'ellipse':
