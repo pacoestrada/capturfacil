@@ -42,3 +42,20 @@ class LifecycleTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class UpgradeTests(unittest.TestCase):
+    def test_hidden_upgrade_restarts_but_visible_work_is_preserved(self):
+        from unittest.mock import patch
+        for visible in (True, False):
+            app = SimpleNamespace(code_stamp=0,
+                window=SimpleNamespace(get_visible=lambda:visible,tempdir=None),
+                quit=lambda: self.fail('do not discard the resident process before replacement'))
+            with patch('capturfacil.shortcuts.active',return_value=True), patch('capturfacil.os.execv') as restart:
+                if visible:
+                    self.assertTrue(Application.check_installed_code(app))
+                    restart.assert_not_called()
+                else:
+                    restart.side_effect=RuntimeError('replacement process')
+                    with self.assertRaisesRegex(RuntimeError,'replacement process'):
+                        Application.check_installed_code(app)
+                    self.assertEqual(restart.call_args.args[1][-1],'--background')
