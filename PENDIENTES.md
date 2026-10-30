@@ -1,19 +1,21 @@
-# Mejoras pendientes
+# CapturFácil 0.1.4 beta.1
 
-## Fondo transparente
+Versión de pruebas en desarrollo, no estable. Publicada el 30 de octubre de 2026. Conserva el instalador 0.1.4 probado por el usuario; esta publicación no introduce correcciones adicionales.
 
-Petición del usuario: que el fondo blanco de la aplicación sea transparente y permita ver la pantalla real debajo. Pendiente de diseñar y probar con la composición de GNOME/X11. Distinguir el fondo de la interfaz de la imagen capturada para no alterar el PNG guardado ni volver transparentes las herramientas.
+## Mejoras comprobadas
 
-## Mover anotaciones
+- El texto ya colocado se puede mover y cambiar de color y tamaño.
+- Captura ampliada, anotaciones, guardado automático y fondo transparente incorporados en esta serie.
 
-Permitir seleccionar y arrastrar el texto después de colocarlo. Extender, si resulta cómodo, a flechas y formas. Mantener deshacer y rehacer.
+## Problemas conocidos y siguientes pasos
 
-## Validación
+- **Formas:** el usuario no ve los tiradores para ajustar óvalos/círculos existentes. Aunque hay código y pruebas para selección y redimensionado, la interacción visual no está validada. Revisar también rectángulos; no dar esta mejora por resuelta.
+- **Primera apertura:** sigue siendo lenta, aunque se aprecia cierta mejora. Medir el recorrido real desde Impr Pant hasta la ventana visible.
+- **Segunda apertura:** puede quedar detrás de otras ventanas y mostrar un aviso de que está preparada, obligando a pulsar para traerla al frente. Corregir la activación y el foco de GNOME.
+- Pendientes de validación completa: portapapeles, restauración del atajo al desinstalar, otros escritorios y Wayland.
 
-- Medir apertura inicial y posteriores con Impr Pant.
-- Comprobar desinstalación y recuperación del atajo con sesión abierta y cerrada.
-- Verificar portapapeles y varios monitores con escalados diferentes.
+## Validación e instalación
 
-## Punto de partida
+33 pruebas automatizadas superadas. No sustituyen la comprobación visual en el escritorio. Entorno probado por el usuario: Linux Mint / Ubuntu, GNOME sobre X11.
 
-Versión conservada: 0.1.2. El usuario confirma que resulta más práctica y abre antes. No se ha implementado todavía la transparencia ni el movimiento de anotaciones.
+Descargar capturfacil_0.1.4_all.deb, cerrar la ventana de CapturFácil e instalar encima de la anterior. No es necesario desinstalar primero. El paquete sigue identificándose como 0.1.4; v0.1.4-beta.1 identifica esta publicación de prueba.
