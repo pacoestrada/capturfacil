@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 """CapturFácil — simple screenshot annotations for GNOME."""
 import datetime
+from copy import deepcopy
 import math
 import os
 from pathlib import Path
@@ -16,12 +17,18 @@ from gi.repository import Gdk, Gio, GLib, Gtk
 import cairo
 from drawing import draw_mark, render
 from view import fit_scale, monitor_crop
+from editing import History, hit_text, bounds, move_text, hit_mark, handles, hit_handle, resize
 import shortcuts
 
-VERSION = '0.1.2'
+VERSION = '0.1.4'
 
 CSS = b'''
 window { background: #f5f7fb; }
+window.capturfacil-window.transparent { background-color: transparent; background-image: none; }
+window.capturfacil-window .capture-viewport,
+window.capturfacil-window .capture-scroll { background-color: transparent; background-image: none; }
+.welcome-card { background: #f5f7fb; padding: 24px; border-radius: 16px; }
+.viewbar { background: #f5f7fb; color: #34495e; padding: 8px; }
 headerbar { background: #ffffff; }
 .title { font-size: 27px; font-weight: bold; color: #182f46; }
 .subtitle { color: #586b7f; font-size: 14px; }
@@ -46,12 +53,25 @@ def button(label, callback, style=None):
 class Window(Gtk.ApplicationWindow):
     def __init__(self, app, visible=True):
         super().__init__(application=app, title='CapturFácil')
+        self.get_style_context().add_class('capturfacil-window')
+        self.set_app_paintable(True)
+        screen = self.get_screen()
+        visual = screen.get_rgba_visual()
+        self.rgba_available = visual is not None
+        if visual:
+            self.set_visual(visual)
+        self.transparent_enabled = False
+        self.update_transparency(screen)
+        screen.connect('composited-changed', self.update_transparency)
+        self.connect('draw', self.clear_background)
         self.set_default_size(1100, 730)
         self.set_position(Gtk.WindowPosition.CENTER)
         self.set_icon_name('capturfacil')
         self.base = None
         self.marks = []
-        self.redo_marks = []
+        self.history = History()
+        self.selected = None
+        self.moving = None
         self.current = None
         self.tool = 'arrow'
         self.zoom = None
@@ -90,6 +110,7 @@ class Window(Gtk.ApplicationWindow):
         welcome.set_valign(Gtk.Align.CENTER)
         welcome.set_halign(Gtk.Align.CENTER)
         welcome.set_border_width(25)
+        welcome.get_style_context().add_class('welcome-card')
         title = Gtk.Label(label='¿Qué quieres capturar?')
         title.get_style_context().add_class('title')
         welcome.pack_start(title, False, False, 0)
@@ -113,7 +134,7 @@ class Window(Gtk.ApplicationWindow):
 
         editor_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         viewbar = Gtk.Box(spacing=8)
-        viewbar.set_border_width(8)
+        viewbar.get_style_context().add_class('viewbar')
         viewbar.pack_start(button('−', lambda _b: self.change_zoom(1 / 1.25)), False, False, 0)
         self.zoom_label = Gtk.Label(label='Ajustar')
         self.zoom_label.set_width_chars(8)
@@ -128,10 +149,12 @@ class Window(Gtk.ApplicationWindow):
         editor_page.pack_start(editor, True, True, 0)
         self.scroller = Gtk.ScrolledWindow()
         self.scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        self.scroller.get_style_context().add_class('capture-scroll')
         self.scroller.set_hexpand(True)
         self.scroller.set_vexpand(True)
         self.viewport = Gtk.Viewport()
         self.viewport.set_shadow_type(Gtk.ShadowType.NONE)
+        self.viewport.get_style_context().add_class('capture-viewport')
         self.scroller.add(self.viewport)
         self.viewport.connect('size-allocate', lambda *_args: self.update_view())
         self.canvas = Gtk.DrawingArea()
@@ -157,7 +180,7 @@ class Window(Gtk.ApplicationWindow):
         side_scroll.add(self.sidebar)
         self.revealer.add(side_scroll)
         group = None
-        for label, kind in [('↗  Flecha', 'arrow'), ('╱  Línea', 'line'), ('┄  Línea de puntos', 'dots'), ('○  Círculo / óvalo', 'ellipse'), ('□  Rectángulo', 'rect'), ('T  Texto', 'text'), ('✎  Mano alzada', 'pen')]:
+        for label, kind in [('↗  Flecha', 'arrow'), ('╱  Línea', 'line'), ('┄  Línea de puntos', 'dots'), ('○  Círculo / óvalo', 'ellipse'), ('□  Rectángulo', 'rect'), ('T  Texto', 'text'), ('↔  Seleccionar / mover', 'move'), ('✎  Mano alzada', 'pen')]:
             toggle = Gtk.RadioButton.new_with_label_from_widget(group, label)
             toggle.set_mode(False)
             if group is None:
@@ -174,7 +197,11 @@ class Window(Gtk.ApplicationWindow):
         controls.pack_end(self.color, False, False, 0)
         self.sidebar.pack_start(controls, False, False, 7)
         self.width = self.spin_row('Grosor', 1, 20, 4)
-        self.text_size = self.spin_row('Texto', 12, 100, 28)
+        self.text_size = self.spin_row('Texto', 1, 1000, 28)
+        self.syncing_style = False
+        self.color.connect('color-set', self.change_style, 'color')
+        self.width.connect('value-changed', self.change_style, 'width')
+        self.text_size.connect('value-changed', self.change_style, 'size')
         self.sidebar.pack_start(Gtk.Separator(), False, False, 8)
         self.undo_button = button('↶  Deshacer', self.undo)
         self.redo_button = button('↷  Rehacer', self.redo)
@@ -199,6 +226,26 @@ class Window(Gtk.ApplicationWindow):
         self.maximize()
         if visible:
             self.show()
+
+    def update_transparency(self, screen):
+        self.transparent_enabled = self.rgba_available and screen.is_composited()
+        style = self.get_style_context()
+        if self.transparent_enabled:
+            style.add_class('transparent')
+        else:
+            style.remove_class('transparent')
+        self.queue_draw()
+
+    def clear_background(self, _widget, cr):
+        cr.save()
+        cr.set_operator(cairo.OPERATOR_SOURCE)
+        if self.transparent_enabled:
+            cr.set_source_rgba(0, 0, 0, 0)
+        else:
+            cr.set_source_rgb(.96, .97, .98)
+        cr.paint()
+        cr.restore()
+        return False
 
     def toggle_fullscreen(self, _button=None):
         self.full = not self.full
@@ -256,7 +303,9 @@ class Window(Gtk.ApplicationWindow):
     def reset_capture(self):
         self.base = None
         self.marks = []
-        self.redo_marks = []
+        self.history = History()
+        self.selected = None
+        self.moving = None
         self.current = None
         self.pan = None
         self.saved = None
@@ -291,8 +340,8 @@ class Window(Gtk.ApplicationWindow):
         ready = self.base is not None and self.stack.get_visible_child_name() == 'editor'
         for control in [self.save_button, self.copy_button, self.edit_button]:
             control.set_sensitive(ready)
-        self.undo_button.set_sensitive(bool(self.marks))
-        self.redo_button.set_sensitive(bool(self.redo_marks))
+        self.undo_button.set_sensitive(bool(self.history.past))
+        self.redo_button.set_sensitive(bool(self.history.future))
 
     def update_shortcut(self):
         self.shortcut_button.set_label('Devolver Impr Pant a GNOME' if shortcuts.active() else 'Usar CapturFácil con Impr Pant')
@@ -315,12 +364,15 @@ class Window(Gtk.ApplicationWindow):
         self.revealer.set_reveal_child(toggle.get_active())
         self.canvas.queue_draw()
         if toggle.get_active():
-            self.set_status('Elige una herramienta y dibuja sobre la imagen. Texto: haz clic donde quieras escribir.')
+            self.set_status('Seleccionar / mover: arrastra texto o formas; ajusta las formas desde sus esquinas. Color y Texto cambian la selección.')
         self.canvas.grab_focus()
 
     def select_tool(self, widget, kind):
         if widget.get_active():
             self.tool = kind
+            self.selected = None
+            if hasattr(self, 'canvas'):
+                self.canvas.queue_draw()
 
     def discard_ok(self):
         if not self.dirty:
@@ -337,14 +389,8 @@ class Window(Gtk.ApplicationWindow):
 
     def new_capture(self, _button):
         if self.discard_ok():
-            self.base = None
-            self.marks = []
-            self.redo_marks = []
-            self.dirty = False
-            self.stack.set_visible_child_name('welcome')
-            self.edit_button.set_active(False)
-            self.set_status('Elige pantalla completa, ventana o área.')
-            self.update_buttons()
+            self.reset_capture()
+            self.set_status('Elige pantalla actual, todas las pantallas, ventana o área.')
 
     def capture(self, mode):
         if self.tempdir is not None:
@@ -421,7 +467,9 @@ class Window(Gtk.ApplicationWindow):
             self.base = monitor_crop(self.base, *monitor)
         self.zoom = None
         self.marks = []
-        self.redo_marks = []
+        self.history = History()
+        self.selected = None
+        self.moving = None
         self.current = None
         self.saved = None
         self.dirty = True
@@ -435,8 +483,14 @@ class Window(Gtk.ApplicationWindow):
         self.canvas.queue_draw()
 
     def draw(self, widget, cr):
-        cr.set_source_rgb(0.87, 0.9, 0.94)
+        cr.save()
+        cr.set_operator(cairo.OPERATOR_SOURCE)
+        if self.transparent_enabled:
+            cr.set_source_rgba(0, 0, 0, 0)
+        else:
+            cr.set_source_rgb(.87, .9, .94)
         cr.paint()
+        cr.restore()
         if self.base is None:
             return
         width, height = widget.get_allocated_width(), widget.get_allocated_height()
@@ -451,6 +505,48 @@ class Window(Gtk.ApplicationWindow):
             draw_mark(cr, mark)
         if self.current:
             draw_mark(cr, self.current)
+        if self.selected is not None and self.edit_button.get_active() and self.tool in ('text', 'move'):
+            x, y, width, height = bounds(self.marks[self.selected])
+            padding = 4 / self.scale
+            cr.set_line_width(1.5 / self.scale)
+            cr.set_dash([5 / self.scale, 4 / self.scale])
+            cr.set_source_rgb(.05, .55, .7)
+            cr.rectangle(x-padding, y-padding, width+2*padding, height+2*padding)
+            cr.stroke()
+            cr.set_dash([])
+            for hx, hy in handles(self.marks[self.selected]):
+                radius = 4 / self.scale
+                cr.rectangle(hx-radius, hy-radius, 2*radius, 2*radius)
+                cr.fill()
+
+    def sync_style(self):
+        if self.selected is None:
+            return
+        mark = self.marks[self.selected]
+        self.syncing_style = True
+        try:
+            self.color.set_rgba(Gdk.RGBA(*mark['color']))
+            self.width.set_value(mark['width'] * self.scale)
+            if mark['kind'] == 'text':
+                self.text_size.set_value(mark['size'] * self.scale)
+        finally:
+            self.syncing_style = False
+
+    def change_style(self, widget, field):
+        if self.syncing_style or self.selected is None or self.moving:
+            return
+        mark = self.marks[self.selected]
+        if field == 'size' and mark['kind'] != 'text':
+            return
+        if field == 'color':
+            color = widget.get_rgba()
+            value = (color.red, color.green, color.blue, 1)
+        else:
+            value = widget.get_value() / self.scale
+        if mark.get(field) != value:
+            self.history.record(self.marks)
+            mark[field] = value
+            self.changed()
 
     def point(self, event, clamp=False):
         x = (event.x - self.offset[0]) / self.scale
@@ -473,6 +569,22 @@ class Window(Gtk.ApplicationWindow):
         if point is None:
             return False
         self.canvas.grab_focus()
+        if self.tool in ('text', 'move'):
+            corner = None
+            if self.tool == 'move' and self.selected is not None:
+                corner = hit_handle(self.marks[self.selected], point, 7 / self.scale)
+            if corner is None:
+                hit = hit_mark if self.tool == 'move' else hit_text
+                self.selected = hit(self.marks, point, 5 / self.scale)
+            if self.selected is not None:
+                self.sync_style()
+                self.moving = {'start': point, 'before': deepcopy(self.marks), 'index': self.selected, 'corner': corner}
+                self.canvas.queue_draw()
+                return True
+            if self.tool == 'move':
+                self.set_status('Arrastra texto, rectángulos u óvalos. Selecciona una forma y arrastra sus esquinas para ajustarla.')
+                self.canvas.queue_draw()
+                return True
         color = self.color.get_rgba()
         mark = {'kind': self.tool, 'points': [point], 'width': self.width.get_value() / self.scale,
                 'color': (color.red, color.green, color.blue, 1)}
@@ -492,6 +604,19 @@ class Window(Gtk.ApplicationWindow):
             self.scroller.get_hadjustment().set_value(hx + x - event.x_root)
             self.scroller.get_vadjustment().set_value(vy + y - event.y_root)
             return True
+        if self.moving:
+            point = self.point(event, True)
+            start = self.moving['start']
+            index = self.moving['index']
+            original = self.moving['before'][index]
+            if self.moving.get('corner') is not None:
+                self.marks[index] = resize(original, self.moving['corner'], point,
+                                          self.base.get_width(), self.base.get_height())
+            else:
+                self.marks[index] = move_text(original, point[0]-start[0], point[1]-start[1],
+                                             self.base.get_width(), self.base.get_height())
+            self.canvas.queue_draw()
+            return True
         if self.current:
             point = self.point(event, True)
             if self.tool == 'pen':
@@ -504,6 +629,13 @@ class Window(Gtk.ApplicationWindow):
     def release(self, _widget, event):
         if event.button == 2:
             self.pan = None
+            return True
+        if event.button == 1 and self.moving:
+            self.motion(_widget, event)
+            if self.marks != self.moving['before']:
+                self.history.record(self.moving['before'])
+                self.changed()
+            self.moving = None
             return True
         if event.button == 1 and self.current:
             self.motion(_widget, event)
@@ -536,8 +668,9 @@ class Window(Gtk.ApplicationWindow):
         return text if result == Gtk.ResponseType.OK else ''
 
     def add_mark(self, mark):
+        self.history.record(self.marks)
         self.marks.append(mark)
-        self.redo_marks.clear()
+        self.selected = len(self.marks)-1 if mark['kind'] == 'text' else None
         self.changed()
 
     def changed(self):
@@ -546,13 +679,15 @@ class Window(Gtk.ApplicationWindow):
         self.canvas.queue_draw()
 
     def undo(self, _button=None):
-        if self.marks:
-            self.redo_marks.append(self.marks.pop())
+        if self.history.past:
+            self.marks = self.history.undo(self.marks)
+            self.selected = None
             self.changed()
 
     def redo(self, _button=None):
-        if self.redo_marks:
-            self.marks.append(self.redo_marks.pop())
+        if self.history.future:
+            self.marks = self.history.redo(self.marks)
+            self.selected = None
             self.changed()
 
     def folder(self):
@@ -608,6 +743,12 @@ class Window(Gtk.ApplicationWindow):
             self.error(f'No se pudo abrir la carpeta: {exc}')
 
     def keypress(self, _widget, event):
+        if self.moving:
+            if event.keyval == Gdk.KEY_Escape:
+                self.marks = self.moving['before']
+                self.moving = None
+                self.canvas.queue_draw()
+            return True
         if event.keyval == Gdk.KEY_F11:
             self.toggle_fullscreen()
             return True
@@ -673,6 +814,8 @@ class Application(Gtk.Application):
             changed = True
         if changed and (self.window is None or
                         (not self.window.get_visible() and self.window.tempdir is None)):
+            if Path(__file__).exists() and shortcuts.active():
+                os.execv(sys.executable, [sys.executable, __file__, '--background'])
             self.quit()
             return False
         return True
