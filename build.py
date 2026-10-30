@@ -17,7 +17,7 @@ def write(path, contents, mode=0o644):
     dest.chmod(mode)
 
 write('DEBIAN/control', '''Package: capturfacil
-Version: 0.1.2
+Version: 0.1.4
 Section: graphics
 Priority: optional
 Architecture: all
@@ -40,6 +40,11 @@ exec /usr/bin/python3 /usr/share/capturfacil/capturfacil.py "$@"
 ''', 0o755)
 for src in (BASE / 'src').glob('*.py'):
     write('usr/share/capturfacil/' + src.name, src.read_text())
+# D-Bus starts this in the desktop session environment, never as root.
+write('usr/share/dbus-1/services/es.compilando.CapturFacil.service', """[D-BUS Service]
+Name=es.compilando.CapturFacil
+Exec=/usr/bin/python3 /usr/share/capturfacil/capturfacil.py --background
+""")
 write('usr/share/applications/capturfacil.desktop', '''[Desktop Entry]
 Type=Application
 Name=CapturFácil
@@ -58,10 +63,9 @@ Type=Application
 Name=CapturFácil en segundo plano
 Exec=capturfacil --background
 Icon=capturfacil
-OnlyShowIn=GNOME;
 NoDisplay=true
 X-GNOME-Autostart-enabled=true
-X-GNOME-Autostart-Delay=5
+X-GNOME-Autostart-Delay=0
 """)
 write('usr/share/icons/hicolor/scalable/apps/capturfacil.svg', (BASE / 'icon.svg').read_text())
 write('usr/share/doc/capturfacil/README.md', (BASE / 'README.md').read_text())
@@ -92,6 +96,27 @@ set -e
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
   gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
 fi
+if [ "${1:-}" = configure ]; then
+  # Versions <= 0.1.3 retire their hidden instance every five seconds.
+  # Let it relinquish the bus name before asking the session to preload.
+  if [ -n "${2:-}" ]; then sleep 6; fi
+  for runtime in /run/user/[0-9]*; do
+    [ -d "$runtime" ] || continue
+    uid=${runtime##*/}
+    [ "$uid" -ge 1000 ] 2>/dev/null || continue
+    [ -S "$runtime/bus" ] || continue
+    entry=$(getent passwd "$uid") || continue
+    username=$(printf '%s' "$entry" | cut -d: -f1)
+    userhome=$(printf '%s' "$entry" | cut -d: -f6)
+    # Preload only for users who have previously enabled our shortcut.
+    [ -f "$userhome/.config/capturfacil/shortcut.json" ] || continue
+    runuser -u "$username" -- env HOME="$userhome" XDG_RUNTIME_DIR="$runtime" \\
+      DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" \\
+      /usr/bin/gdbus call --session --dest org.freedesktop.DBus \\
+      --object-path /org/freedesktop/DBus --method org.freedesktop.DBus.StartServiceByName \\
+      es.compilando.CapturFacil 0 --timeout 5 >/dev/null 2>&1 || true
+  done
+fi
 exit 0
 ''', 0o755)
 write('DEBIAN/postrm', '''#!/bin/sh
@@ -114,6 +139,6 @@ for directory in ROOT.rglob('*'):
 ROOT.chmod(0o755)
 archive.chmod(0o644)
 (BASE / 'dist').mkdir(exist_ok=True)
-output = BASE / 'dist/capturfacil_0.1.2_all.deb'
+output = BASE / 'dist/capturfacil_0.1.4_all.deb'
 subprocess.run(['dpkg-deb', '--root-owner-group', '--build', str(ROOT), str(output)], check=True)
 print(output)
