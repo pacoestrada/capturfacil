@@ -6,6 +6,12 @@ Desarrollada por Paco Estrada con asistencia de IA para simplificar un flujo de 
 
 **[Descargar en GitHub](https://github.com/pacoestrada/capturfacil/releases/tag/v1.1.0)** · **[Descargar en GitLab](https://gitlab.com/PacoEstrada/capturfacil/-/releases/v1.1.0)** · [Cambios](RELEASE_NOTES.md) · [Pendientes](PENDIENTES.md)
 
+## Interfaz
+
+![Pantalla inicial de CapturFácil con los modos de captura y la devolución de Impr Pant a GNOME](capturfacil-interfaz.png)
+
+Pantalla inicial: selección de pantalla, ventana o área y controles para recuperar el capturador de GNOME. Tras realizar una captura, pulsa **Retoques** para abrir las herramientas de anotación.
+
 ## Requisitos y compatibilidad
 
 El entorno probado es **Linux Mint 22.1, base Ubuntu 24.04, con GNOME y sesión X11**, incluidos varios monitores y escalado al 200 %. El paquete Debian es de arquitectura `all`: contiene código Python, pero necesita las bibliotecas y herramientas del sistema.
