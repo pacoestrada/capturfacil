@@ -1,5 +1,6 @@
 """Text selection, movement and reversible annotation history."""
 from copy import deepcopy
+import math
 import cairo
 from drawing import text_layout
 
@@ -70,7 +71,15 @@ def bounds(mark):
 def hit_mark(marks, point, tolerance=4):
     px, py = point
     for index in range(len(marks)-1, -1, -1):
-        if marks[index]['kind'] not in ('text', 'rect', 'ellipse'):
+        if marks[index]['kind'] in ('arrow', 'line', 'dots'):
+            a, b = marks[index]['points'][0], marks[index]['points'][-1]
+            dx, dy = b[0]-a[0], b[1]-a[1]
+            length2 = dx*dx + dy*dy
+            t = min(1, max(0, ((px-a[0])*dx+(py-a[1])*dy)/length2)) if length2 else 0
+            if math.hypot(px-a[0]-t*dx, py-a[1]-t*dy) <= tolerance + marks[index]['width']/2:
+                return index
+            continue
+        if marks[index]['kind'] not in ('text', 'rect', 'ellipse', 'pen'):
             continue
         x, y, w, h = bounds(marks[index])
         if x-tolerance <= px <= x+w+tolerance and y-tolerance <= py <= y+h+tolerance:
@@ -79,7 +88,9 @@ def hit_mark(marks, point, tolerance=4):
 
 
 def handles(mark):
-    if mark['kind'] not in ('rect', 'ellipse'):
+    if mark['kind'] in ('arrow', 'line', 'dots'):
+        return [mark['points'][0], mark['points'][-1]]
+    if mark['kind'] not in ('rect', 'ellipse', 'pen'):
         return []
     x, y, w, h = bounds(mark)
     return [(x,y), (x+w,y), (x+w,y+h), (x,y+h)]
@@ -94,13 +105,24 @@ def hit_handle(mark, point, tolerance):
 
 def resize(mark, corner, point, image_width, image_height):
     result = deepcopy(mark)
-    opposite = handles(mark)[(corner+2)%4]
     x = min(max(0, point[0]), image_width-1)
     y = min(max(0, point[1]), image_height-1)
+    if mark['kind'] in ('arrow', 'line', 'dots'):
+        opposite = mark['points'][1-corner]
+        if math.dist((x,y), opposite) >= 1:
+            result['points'][corner] = (x,y)
+        return result
+    opposite = handles(mark)[(corner+2)%4]
     # Keep a drawable shape, including when the pointer crosses its opposite corner.
     if abs(x-opposite[0]) < 1:
         x = opposite[0]+1 if opposite[0] < image_width-1 else opposite[0]-1
     if abs(y-opposite[1]) < 1:
         y = opposite[1]+1 if opposite[1] < image_height-1 else opposite[1]-1
-    result['points'] = [opposite, (x,y)]
+    if mark['kind'] == 'pen':
+        dragged = handles(mark)[corner]
+        sx = (x-opposite[0]) / (dragged[0]-opposite[0]) if dragged[0] != opposite[0] else 1
+        sy = (y-opposite[1]) / (dragged[1]-opposite[1]) if dragged[1] != opposite[1] else 1
+        result['points'] = [(opposite[0]+(px-opposite[0])*sx, opposite[1]+(py-opposite[1])*sy) for px,py in mark['points']]
+    else:
+        result['points'] = [opposite, (x,y)]
     return result
