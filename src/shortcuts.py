@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import sys
+import time
 from gi.repository import Gio
 
 SCHEMA = 'org.gnome.settings-daemon.plugins.media-keys'
@@ -105,6 +106,52 @@ def install():
     except Exception:
         restore()
         raise
+
+
+def restore_gnome():
+    """Explicit user request to enable GNOME, even with an empty/missing backup.
+
+    Uninstall still uses restore() to preserve the user's previous preferences.
+    """
+    media = settings(SCHEMA)
+    paths = list(media.get_strv('custom-keybindings'))
+    for path in paths:
+        custom = settings(CUSTOM, path)
+        if custom.get_string('binding') == 'Print' and (
+                path != BINDING or custom.get_string('command') != COMMAND):
+            raise RuntimeError('Impr Pant pertenece a otro atajo personalizado. No se ha modificado.')
+    target = None
+    for schema, key in [('org.gnome.shell.keybindings', 'show-screenshot-ui'),
+                        (SCHEMA, 'screenshot')]:
+        try:
+            obj = settings(schema)
+        except RuntimeError:
+            continue
+        if obj.props.settings_schema.has_key(key) and obj.is_writable(key):
+            target = obj, key
+            break
+    if target is None:
+        raise RuntimeError('No se ha encontrado un atajo de captura de GNOME que se pueda activar.')
+    # Release the media-keys grab before GNOME Shell tries to acquire Print.
+    custom = settings(CUSTOM, BINDING)
+    if custom.get_string('command') == COMMAND and custom.get_string('binding') == 'Print':
+        set_value(media, 'custom-keybindings', [p for p in paths if p != BINDING])
+        Gio.Settings.sync()
+        time.sleep(0.25)
+    restore()
+    obj, key = target
+    current = list(obj.get_strv(key))
+    if 'Print' not in current:
+        set_value(obj, key, current + ['Print'])
+    # Also repair the owned binding when its backup has disappeared.
+    custom = settings(CUSTOM, BINDING)
+    if custom.get_string('command') == COMMAND and custom.get_string('binding') == 'Print':
+        set_value(media, 'custom-keybindings', [p for p in media.get_strv('custom-keybindings') if p != BINDING])
+        for name in ['name', 'command', 'binding']:
+            custom.reset(name)
+    Gio.Settings.sync()
+    if 'Print' not in obj.get_strv(key) or active():
+        raise RuntimeError('No se ha podido verificar la devolución de Impr Pant a GNOME.')
 
 
 def restore():
