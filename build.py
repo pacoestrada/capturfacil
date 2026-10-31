@@ -17,12 +17,12 @@ def write(path, contents, mode=0o644):
     dest.chmod(mode)
 
 write('DEBIAN/control', '''Package: capturfacil
-Version: 0.1.4
+Version: 1.1.0
 Section: graphics
 Priority: optional
 Architecture: all
 Maintainer: CapturFacil <capturfacil@localhost>
-Depends: python3, python3-gi, python3-gi-cairo, python3-cairo, gir1.2-gtk-3.0, gir1.2-pango-1.0, gnome-screenshot, util-linux, libglib2.0-bin
+Depends: python3, python3-gi, python3-gi-cairo, python3-cairo, gir1.2-gtk-3.0, gir1.2-pango-1.0, gnome-screenshot, scrot, util-linux, libglib2.0-bin
 Recommends: gnome-shell
 Description: Capturas de pantalla y anotaciones sencillas para GNOME
  Captura pantalla, ventana o area y anade flechas, texto, formas
@@ -128,7 +128,7 @@ exit 0
 ''', 0o755)
 archive = ROOT / 'usr/share/doc/capturfacil/source.tar.gz'
 with tarfile.open(archive, 'w:gz') as tf:
-    for name in ['src', 'tests', 'build.py', 'README.md', 'icon.svg']:
+    for name in ['src', 'tests', 'build.py', 'README.md', 'RELEASE_NOTES.md', 'PENDIENTES.md', 'icon.svg']:
         tf.add(BASE / name, arcname='capturfacil/' + name,
                filter=lambda item: None if '__pycache__' in item.name else item)
 (ROOT / 'DEBIAN/control').write_text((ROOT / 'DEBIAN/control').read_text() +
@@ -139,6 +139,6 @@ for directory in ROOT.rglob('*'):
 ROOT.chmod(0o755)
 archive.chmod(0o644)
 (BASE / 'dist').mkdir(exist_ok=True)
-output = BASE / 'dist/capturfacil_0.1.4_all.deb'
+output = BASE / 'dist/capturfacil_1.1.0_all.deb'
 subprocess.run(['dpkg-deb', '--root-owner-group', '--build', str(ROOT), str(output)], check=True)
 print(output)
