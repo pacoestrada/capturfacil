@@ -182,3 +182,50 @@ class ShapeAndStyleTests(unittest.TestCase):
         self.assertEqual(bounds(resize(original,2,(999,999),600,400)),(20,20,579,379))
         x,y,w,h = bounds(resize(original,2,(20,20),600,400))
         self.assertEqual((w,h),(1,1))
+
+class VisibleShapeEditingTests(unittest.TestCase):
+    def test_shape_can_resize_without_switching_drawing_tool(self):
+        for kind in ('rect', 'ellipse', 'pen'):
+            for scale in (.2, 1, 4):
+                editor = EditingTests().make_editor(scale)
+                editor.tool = kind
+                shape = {'kind':kind, 'points':[(100,80),(150,120),(200,180)] if kind == 'pen' else [(100,80),(200,180)], 'width':4, 'color':(1,0,0,1)}
+                editor.marks = []
+                Window.add_mark(editor, shape)
+                self.assertEqual(editor.selected, 0)
+                original = deepcopy(editor.marks)
+                editor.press(None, EditingTests().event(scale, 200,180))
+                editor.release(None, EditingTests().event(scale, 250,220))
+                from editing import bounds
+                self.assertEqual(bounds(editor.marks[0]), (100,80,150,140))
+                self.assertEqual(len(editor.marks[0]['points']), len(shape['points']))
+                editor.undo(None)
+                self.assertEqual(editor.marks, original)
+
+class ArrowEditingTests(unittest.TestCase):
+    def test_both_endpoints_move_independently_and_undo(self):
+        from editing import handles
+        for kind in ('arrow','line','dots'):
+            for scale in (.2,1,4):
+                for corner in (0,1):
+                    editor=EditingTests().make_editor(scale)
+                    editor.tool=kind
+                    editor.marks=[]
+                    shape={'kind':kind,'points':[(200,180),(100,80)],'width':4,'color':(1,0,0,1)}
+                    Window.add_mark(editor,shape)
+                    original=deepcopy(editor.marks)
+                    start=handles(shape)[corner]
+                    editor.press(None,EditingTests().event(scale,*start))
+                    editor.release(None,EditingTests().event(scale,250,200))
+                    self.assertEqual(editor.marks[0]['points'][corner],(250,200))
+                    self.assertEqual(editor.marks[0]['points'][1-corner],original[0]['points'][1-corner])
+                    editor.undo(None)
+                    self.assertEqual(editor.marks,original)
+
+    def test_line_selection_follows_segment_not_bounding_rectangle(self):
+        from editing import hit_mark,resize
+        shape={'kind':'arrow','points':[(20,20),(200,200)],'width':4,'color':(1,0,0,1)}
+        self.assertEqual(hit_mark([shape],(100,100)),0)
+        self.assertIsNone(hit_mark([shape],(20,200)))
+        self.assertEqual(resize(shape,1,(-999,999),300,300)['points'],[(20,20),(0,299)])
+        self.assertEqual(resize(shape,1,(20,20),300,300),shape)
