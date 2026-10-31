@@ -9,9 +9,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 import cairo
 from capturfacil import Application, Gdk, GLib, Gtk
 from types import SimpleNamespace
+from unittest.mock import patch
+# Never add synthetic GUI fixtures to the user's recent files.
+recent_patch = patch('capturfacil.register_saved_image', return_value=False)
+recent_patch.start()
 
 OUT = Path('/tmp/capturfacil/qa')
-OUT.mkdir(exist_ok=True)
+OUT.mkdir(parents=True, exist_ok=True)
 image = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1400, 850)
 cr = cairo.Context(image)
 cr.set_source_rgb(.97, .98, 1)
@@ -97,3 +101,4 @@ app.run([])
 if errors:
     raise RuntimeError(errors)
 print('GTK UI, gestures, undo/redo, full-resolution export and non-overwriting save: OK')
+
