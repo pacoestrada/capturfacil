@@ -19,8 +19,13 @@ from drawing import draw_mark, render
 from view import fit_scale, monitor_crop
 from editing import History, hit_text, bounds, move_text, hit_mark, handles, hit_handle, resize
 import shortcuts
+from timing import CaptureTiming
+from capture_io import temporary_suffix, load_surface
+from backends import capture_commands
+from focus import present_requested
+from recent import register_saved_image
 
-VERSION = '0.1.4'
+VERSION = '1.1.0'
 
 CSS = b'''
 window { background: #f5f7fb; }
@@ -126,9 +131,13 @@ class Window(Gtk.ApplicationWindow):
         hint.set_justify(Gtk.Justification.CENTER)
         hint.get_style_context().add_class('small')
         welcome.pack_start(hint, False, False, 0)
+        self.compatible_capture = Gtk.CheckButton(label='Modo compatible (GNOME)')
+        self.compatible_capture.set_tooltip_text('Actívalo si la captura rápida de pantalla completa no se ve correctamente.')
+        welcome.pack_start(self.compatible_capture, False, False, 0)
         self.shortcut_button = button('', self.toggle_shortcut)
         self.shortcut_button.set_halign(Gtk.Align.CENTER)
         welcome.pack_start(self.shortcut_button, False, False, 10)
+        welcome.pack_start(button('Restablecer Impr Pant de GNOME', self.restore_gnome), False, False, 4)
         self.update_shortcut()
         self.stack.add_named(welcome, 'welcome')
 
@@ -346,11 +355,19 @@ class Window(Gtk.ApplicationWindow):
     def update_shortcut(self):
         self.shortcut_button.set_label('Devolver Impr Pant a GNOME' if shortcuts.active() else 'Usar CapturFácil con Impr Pant')
 
+    def restore_gnome(self, _button=None):
+        try:
+            shortcuts.restore_gnome()
+            self.set_status('Impr Pant está asignada a las capturas de GNOME.')
+        except Exception as exc:
+            self.error(str(exc))
+        self.update_shortcut()
+
     def toggle_shortcut(self, _button):
         try:
             if shortcuts.active():
-                shortcuts.restore()
-                self.set_status('Se ha devuelto Impr Pant a su configuración anterior.')
+                shortcuts.restore_gnome()
+                self.set_status('Impr Pant está asignada a las capturas de GNOME.')
             else:
                 if not Path('/usr/bin/capturfacil').exists():
                     raise RuntimeError('Instala primero el paquete .deb para activar Impr Pant.')
@@ -395,6 +412,7 @@ class Window(Gtk.ApplicationWindow):
     def capture(self, mode):
         if self.tempdir is not None:
             return
+        self.capture_timing = CaptureTiming()
         self.capture_monitor = None
         if mode == 'monitor':
             display = self.get_display()
@@ -407,23 +425,35 @@ class Window(Gtk.ApplicationWindow):
                                     (left, top, right-left, bottom-top))
         self.hide()
         self.tempdir = tempfile.TemporaryDirectory(prefix='capturfacil-')
-        self.capture_path = Path(self.tempdir.name) / 'capture.png'
+        self.capture_path = Path(self.tempdir.name) / ('capture' + temporary_suffix(mode))
+        compatible = getattr(self, 'compatible_capture', None)
+        x11 = self.get_display().__class__.__name__ == 'X11Display' and os.environ.get('XDG_SESSION_TYPE') != 'wayland'
+        self.pending_commands = capture_commands(mode, self.capture_path, x11,
+                                                 bool(compatible and compatible.get_active()))
         def start():
-            args = ['gnome-screenshot', '-f', str(self.capture_path)]
-            if mode == 'area':
-                args.append('-a')
-            elif mode == 'window':
-                args.extend(['-w', '-d', '3'])
-            try:
-                self.process = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-                self.started = time.monotonic()
-                GLib.timeout_add(100, self.check_capture)
-            except OSError as exc:
-                self.cleanup_capture()
-                self.present()
-                self.error(f'No se pudo iniciar la captura: {exc}')
+            self.capture_timing.mark('backend')
+            if self.start_capture_process():
+                GLib.timeout_add(50, self.check_capture)
             return False
         GLib.timeout_add(400, start)
+
+    def start_capture_process(self):
+        last_error = ''
+        while self.pending_commands:
+            args = self.pending_commands.pop(0)
+            try:
+                # Do not let a partial file from a failed backend look successful.
+                self.capture_path.unlink(missing_ok=True)
+                self.process = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                self.capture_backend = Path(args[0]).name
+                self.started = time.monotonic()
+                return True
+            except OSError as exc:
+                last_error = str(exc)
+        self.cleanup_capture()
+        self.present()
+        self.error('No se pudo iniciar la captura: ' + last_error)
+        return False
 
     def check_capture(self):
         if self.process.poll() is None:
@@ -441,18 +471,32 @@ class Window(Gtk.ApplicationWindow):
             return False
         _, stderr = self.process.communicate()
         code = self.process.returncode
+        has_file = self.capture_path.exists() and self.capture_path.stat().st_size
+        if (code or not has_file) and getattr(self, 'pending_commands', []):
+            return self.start_capture_process()
+        retry = False
         try:
             if self.capture_path.exists() and self.capture_path.stat().st_size:
+                if getattr(self, 'capture_timing', None):
+                    self.capture_timing.mark('received')
                 self.load_image(str(self.capture_path), self.capture_monitor)
             elif code and stderr:
                 self.error('No se pudo obtener la captura. ' + stderr.decode(errors='replace')[-400:])
             else:
                 self.set_status('Captura cancelada. Puedes volver a seleccionar un área.')
         except Exception as exc:
-            self.error(f'No se pudo abrir la captura: {exc}')
+            if getattr(self, 'pending_commands', []):
+                retry = True
+            else:
+                self.error(f'No se pudo abrir la captura: {exc}')
         finally:
-            self.cleanup_capture()
-            self.present()
+            if not retry:
+                self.cleanup_capture()
+                self.present()
+        if retry:
+            if getattr(self, 'capture_timing', None):
+                self.capture_timing.points.pop('received', None)
+            return self.start_capture_process()
         return False
 
     def cleanup_capture(self):
@@ -462,9 +506,11 @@ class Window(Gtk.ApplicationWindow):
             self.tempdir = None
 
     def load_image(self, path, monitor=None):
-        self.base = cairo.ImageSurface.create_from_png(path)
+        self.base = load_surface(path)
         if monitor:
             self.base = monitor_crop(self.base, *monitor)
+        if getattr(self, 'capture_timing', None):
+            self.capture_timing.mark('decoded')
         self.zoom = None
         self.marks = []
         self.history = History()
@@ -505,7 +551,7 @@ class Window(Gtk.ApplicationWindow):
             draw_mark(cr, mark)
         if self.current:
             draw_mark(cr, self.current)
-        if self.selected is not None and self.edit_button.get_active() and self.tool in ('text', 'move'):
+        if self.selected is not None and self.edit_button.get_active() :
             x, y, width, height = bounds(self.marks[self.selected])
             padding = 4 / self.scale
             cr.set_line_width(1.5 / self.scale)
@@ -515,9 +561,18 @@ class Window(Gtk.ApplicationWindow):
             cr.stroke()
             cr.set_dash([])
             for hx, hy in handles(self.marks[self.selected]):
-                radius = 4 / self.scale
+                radius = 6 / self.scale
                 cr.rectangle(hx-radius, hy-radius, 2*radius, 2*radius)
                 cr.fill()
+
+        timing = getattr(self, 'capture_timing', None)
+        if timing and 'decoded' in timing.points and 'drawn' not in timing.points:
+            timing.mark('drawn')
+            def report():
+                if getattr(self, 'capture_timing', None) is timing and self.base is not None:
+                    self.set_status(timing.summary() + (' · Rápida' if getattr(self, 'capture_backend', '') == 'scrot' else ' · Compatible') + ' · Pulsa Retoques para anotar.')
+                return False
+            GLib.idle_add(report)
 
     def sync_style(self):
         if self.selected is None:
@@ -569,12 +624,12 @@ class Window(Gtk.ApplicationWindow):
         if point is None:
             return False
         self.canvas.grab_focus()
-        if self.tool in ('text', 'move'):
+        if self.tool in ('text', 'move', 'rect', 'ellipse', 'pen', 'arrow', 'line', 'dots'):
             corner = None
-            if self.tool == 'move' and self.selected is not None:
+            if self.selected is not None:
                 corner = hit_handle(self.marks[self.selected], point, 7 / self.scale)
             if corner is None:
-                hit = hit_mark if self.tool == 'move' else hit_text
+                hit = hit_text if self.tool == 'text' else hit_mark
                 self.selected = hit(self.marks, point, 5 / self.scale)
             if self.selected is not None:
                 self.sync_style()
@@ -582,7 +637,7 @@ class Window(Gtk.ApplicationWindow):
                 self.canvas.queue_draw()
                 return True
             if self.tool == 'move':
-                self.set_status('Arrastra texto, rectángulos u óvalos. Selecciona una forma y arrastra sus esquinas para ajustarla.')
+                self.set_status('Arrastra las anotaciones para moverlas. Ajusta formas por sus esquinas y flechas o líneas por sus extremos.')
                 self.canvas.queue_draw()
                 return True
         color = self.color.get_rgba()
@@ -670,7 +725,7 @@ class Window(Gtk.ApplicationWindow):
     def add_mark(self, mark):
         self.history.record(self.marks)
         self.marks.append(mark)
-        self.selected = len(self.marks)-1 if mark['kind'] == 'text' else None
+        self.selected = len(self.marks)-1
         self.changed()
 
     def changed(self):
@@ -715,6 +770,7 @@ class Window(Gtk.ApplicationWindow):
                     raise
                 self.saved = path
                 self.dirty = False
+            register_saved_image(self.saved)
             self.set_status(f'Guardada · {self.saved.name}')
             return True
         except Exception as exc:
@@ -832,7 +888,7 @@ class Application(Gtk.Application):
             self.background = False
             return
         if self.window.tempdir is None:
-            self.window.present()
+            present_requested(self.window)
 
 
 if __name__ == '__main__':
