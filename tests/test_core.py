@@ -94,6 +94,29 @@ class ShortcutTests(unittest.TestCase):
         self.assertEqual(self.shell.get_strv('show-screenshot-ui'), ['Print', '<Shift>Print'])
         self.assertFalse(s.STATE.exists())
 
+    def test_explicit_gnome_restore_repairs_empty_backup(self):
+        self.shell.set_strv('show-screenshot-ui', [])
+        s.install()
+        s.restore_gnome()
+        self.assertIn('Print', self.shell.get_strv('show-screenshot-ui'))
+        self.assertFalse(s.active())
+
+    def test_explicit_gnome_restore_repairs_missing_backup(self):
+        s.install()
+        s.STATE.unlink()
+        s.restore_gnome()
+        self.assertIn('Print', self.shell.get_strv('show-screenshot-ui'))
+        self.assertNotIn(s.BINDING, self.media.get_strv('custom-keybindings'))
+
+    def test_explicit_gnome_restore_does_not_take_other_custom_shortcut(self):
+        other = '/org/gnome/settings-daemon/plugins/media-keys/another/'
+        self.media.set_strv('custom-keybindings', [other])
+        s.settings(s.CUSTOM, other).set_string('binding', 'Print')
+        self.shell.set_strv('show-screenshot-ui', [])
+        with self.assertRaises(RuntimeError):
+            s.restore_gnome()
+        self.assertEqual(self.shell.get_strv('show-screenshot-ui'), [])
+
     def test_existing_custom_print_is_left_alone(self):
         other = '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/existing/'
         s.settings(s.CUSTOM, other).set_string('binding', 'Print')
@@ -127,6 +150,11 @@ class RenderTests(unittest.TestCase):
 
 
 class SaveTests(unittest.TestCase):
+    def setUp(self):
+        self.recent_patch = patch('capturfacil.register_saved_image', return_value=True)
+        self.register_recent = self.recent_patch.start()
+        self.addCleanup(self.recent_patch.stop)
+
     def test_save_keeps_resolution_and_older_versions(self):
         from capturfacil import Window
         with tempfile.TemporaryDirectory() as tmp:
@@ -145,6 +173,7 @@ class SaveTests(unittest.TestCase):
             loaded = cairo.ImageSurface.create_from_png(str(w.saved))
             self.assertEqual((loaded.get_width(), loaded.get_height()), (800, 450))
             self.assertEqual(errors, [])
+            self.register_recent.assert_called_with(w.saved)
 
     def test_failed_export_removes_partial_file_keeps_edits(self):
         from capturfacil import Window
@@ -159,6 +188,7 @@ class SaveTests(unittest.TestCase):
             self.assertTrue(w.dirty)
             self.assertIs(w.marks, marks)
             self.assertEqual(len(errors), 1)
+            self.register_recent.assert_not_called()
 
 
 if __name__ == '__main__':
